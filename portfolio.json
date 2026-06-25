@@ -1,0 +1,13 @@
+{
+  "openai_bot": {
+    "cash": 100000.0,
+    "holdings": {},
+    "trade_history": []
+  },
+  "gemini_bot": {
+    "cash": 100000.0,
+    "holdings": {},
+    "trade_history": []
+  },
+  "last_updated": "2026-06-25"
+}
