@@ -2,9 +2,9 @@ name: AI Stock Match Automated Daily Run
 
 on:
   schedule:
-    # 台灣時間週一至週五早上 08:35 自動執行 (美股收盤後，台股開盤前)
+    # 台灣時間週一至週五早上 08:35 自動執行 (美股收盤，台股開盤前)
     - cron: '35 0 * * 1-5' 
-  workflow_dispatch: # 允許你隨時手動點按鈕測試
+  workflow_dispatch: # 允許手動點擊按鈕執行測試
 
 jobs:
   trade-match:
@@ -26,18 +26,20 @@ jobs:
 
     - name: Run AI Trading Engine
       env:
-        # 串接你在 GitHub 後台填寫的 API Keys
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       run: python main.py
 
-    - name: Auto Commit Portfolio Data Base
+    - name: Auto Commit Portfolio Database & HTML Dashboard
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action Bot"
-        if [ -n "$(git status --porcelain portfolio.json)" ]; then
-          git add portfolio.json
-          git commit -m "🤖 系統公告：AI 今日實戰對決結束，資產變更存檔 [$(date +'%Y-%m-%d')]"
+        
+        # 強制將資料庫與產出的網頁檔案一同追蹤
+        git add portfolio.json index.html
+        
+        if [ -n "$(git status --porcelain portfolio.json index.html)" ]; then
+          git commit -m "🤖 系統公告：AI 今日實戰對決結束，資產與 HTML 網頁存檔 [$(date +'%Y-%m-%d')]"
           git push
         else
           echo "今日無資產變動，跳過存檔。"
