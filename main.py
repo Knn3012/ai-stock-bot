@@ -1,18 +1,17 @@
 import os
 import json
+import time
 import datetime
 import yfinance as yf
 import mplfinance as mpf
-from openai import OpenAI
 from google import genai
 from google.genai import types
 
 # ==================== 1. 初始化與工具設定 ====================
-OPENAI_KEY = os.environ.get("OPENAI_API_KEY")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-openai_client = OpenAI(api_key=OPENAI_KEY)
-gemini_client = genai.Client(api_key=GEMINI_KEY)
+# 初始化 Gemini 客戶端
+gemini_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
 class StockTools:
     def __init__(self):
@@ -25,22 +24,24 @@ class StockTools:
         """
         self.call_count += 1
         if self.call_count > 3:
-            return "【系統提示】你今天查看 K 線圖的次數已達上限，請勿再呼叫此工具，請直接根據現有資訊做最終 JSON 決策。"
+            return "【系統提示】你今天查看 K 線圖的次數已達上限，請勿再呼叫此工具。"
+        
+        # 防爆緩衝保護
+        print(f"⏳ 正在調用 K 線圖生成工具 [代碼: {stock_code}]，進入免費版頻率防護延遲...")
+        time.sleep(5) 
         
         try:
-            # 處理可能被 AI 誤打的空白或格式
             code = str(stock_code).strip().replace(".TW", "").replace(".TWO", "")
             ticker_sym = f"{code}.TW"
             stock = yf.Ticker(ticker_sym)
             df = stock.history(period="30d")
             
             if df.empty:
-                # 嘗試上櫃市場格式
                 ticker_sym = f"{code}.TWO"
                 stock = yf.Ticker(ticker_sym)
                 df = stock.history(period="30d")
                 if df.empty:
-                    return f"【系統錯誤】在台股市場（上市/上櫃）中找不到代碼 {code} 的股票數據。"
+                    return f"【系統錯誤】找不到代碼 {code} 的股票數據。"
             
             image_path = f"{code}_kline.png"
             mpf.plot(
@@ -48,9 +49,9 @@ class StockTools:
                 style='charles', title=f"Stock {code} - Last 30 Days",
                 savefig=image_path
             )
-            return f"【系統通知】成功生成 {code} 的 K 線圖，已輸入你的視覺大腦，請據此與消息面進行綜合技術分析。"
+            return f"【系統通知】成功生成 {code} 的 K 線圖，已輸入你的視覺大腦，請據此進行分析。"
         except Exception as e:
-            return f"【系統錯誤】暫時無法取得該 K 圖，請單純以新聞消息面做出決策。錯誤原因：{str(e)}"
+            return f"【系統錯誤】暫時無法取得該 K 圖，原因：{str(e)}"
 
 # ==================== 2. 真實台股交易撮合引擎 ====================
 DB_FILE = "portfolio.json"
@@ -58,14 +59,22 @@ DB_FILE = "portfolio.json"
 def load_db():
     if not os.path.exists(DB_FILE):
         init_data = {
-            "openai_bot": {"cash": 100000.0, "holdings": {}, "trade_history": []},
+            "openai_bot": {"cash": 100000.0, "holdings": {}, "trade_history": [{"date": str(datetime.date.today()), "action": "HOLD", "code": "NONE", "shares": 0, "price": 0, "fee": 0, "reason": "OpenAI 隊目前處於非賽季維護狀態。"}]},
             "gemini_bot": {"cash": 100000.0, "holdings": {}, "trade_history": []},
             "last_updated": str(datetime.date.today())
         }
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(init_data, f, indent=2)
     with open(DB_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        try:
+            return json.load(f)
+        except:
+            # 防損壞重置
+            return {
+                "openai_bot": {"cash": 100000.0, "holdings": {}, "trade_history": [{"date": str(datetime.date.today()), "action": "HOLD", "code": "NONE", "shares": 0, "price": 0, "fee": 0, "reason": "OpenAI 隊目前處於非賽季維護狀態。"}]},
+                "gemini_bot": {"cash": 100000.0, "holdings": {}, "trade_history": []},
+                "last_updated": str(datetime.date.today())
+            }
 
 def save_db(data):
     data["last_updated"] = str(datetime.date.today())
@@ -88,7 +97,6 @@ def execute_trades(bot_key, ai_decision):
         if shares <= 0 or action not in ["BUY", "SELL"]:
             continue
             
-        # 1. 抓取當前真實台股收盤/即時市價
         price = None
         for suffix in [".TW", ".TWO"]:
             try:
@@ -105,9 +113,8 @@ def execute_trades(bot_key, ai_decision):
             continue
             
         amount = price * shares
-        fee = max(20, int(amount * 0.001425)) # 台股最低手續費通常為 20 元
+        fee = max(20, int(amount * 0.001425)) 
         
-        # 2. 買進邏輯
         if action == "BUY":
             total_cost = amount + fee
             if bot["cash"] >= total_cost:
@@ -126,10 +133,9 @@ def execute_trades(bot_key, ai_decision):
             else:
                 print(f"❌ {bot_key} 欲買進 {code}，但資金不足！金額需要 {total_cost}，剩餘現金 {bot['cash']}")
                 
-        # 3. 賣出邏輯
         elif action == "SELL":
             if code in bot["holdings"] and bot["holdings"][code]["shares"] >= shares:
-                tax = int(amount * 0.003) # 台灣股票證交稅 0.3%
+                tax = int(amount * 0.003) 
                 total_revenue = amount - fee - tax
                 bot["cash"] += total_revenue
                 bot["holdings"][code]["shares"] -= shares
@@ -150,12 +156,12 @@ def execute_trades(bot_key, ai_decision):
 SYSTEM_PROMPT = """
 你是擁有完全自主權的台股頂級基金操盤手。你現在有 10 萬元初始資金，支援零股交易。
 請務必執行以下步驟：
-1. 先利用「Google 搜尋工具」去查過去 24 小時最熱門的台灣與美股產業新聞、大盤走勢與市場題材。
+1. 先利用「Google 搜尋工具」去查過去 24 小時最熱門的台灣產業新聞與市場題材。
 2. 當你從新聞中鎖定想交易的台股股票時，請呼叫「get_stock_kline_chart」工具來查看這檔股票的 30 天 K 線圖。
-3. 仔細評估 K 線圖的技術面（均線、型態）與新聞消息面，做出最終交易決策。
+3. 仔細評估 K 線圖的技術面與消息面，做出最終交易決策。
 
 ⚠️ 嚴格規則：
-- 你的輸出必須「完全符合」以下 JSON 格式，不要回答任何多餘對話或Markdown代碼包裹，確保程式可以被 json.loads 解析：
+- 你的輸出必須「完全符合」以下 JSON 格式，不要回答任何多餘對話：
 {
   "reason": "消息面與 K 線技術面綜合分析的詳細理由",
   "trades": [
@@ -164,26 +170,19 @@ SYSTEM_PROMPT = """
 }
 """
 
-def ask_chatgpt():
-    """讓 ChatGPT 全自主聯網與選股"""
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": SYSTEM_PROMPT}],
-            tools=[{"type": "web_search"}], # 開啟全自主聯網
-            response_format={"type": "json_object"}
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        print(f"💥 ChatGPT 執行崩潰：{e}")
-        return {"reason": "格式或線路異常", "trades": []}
-
 def ask_gemini(tools_object):
-    """讓 Gemini 全自主聯網、主動調用畫圖工具、並看圖選股"""
     try:
+        if not gemini_client:
+            raise Exception("未設定 GEMINI_API_KEY 金鑰")
+            
+        print("⏳ [防爆機制] 正在聯網並同步大腦核心...")
+        time.sleep(15) # 強制延遲 15 秒防止免費版連擊崩潰
+        
         shared_tools = [types.Tool(google_search=types.GoogleSearch()), tools_object.get_stock_kline_chart]
+        
+        # 升級至最穩定的新旗艦 gemini-2.0-flash 模型
         response = gemini_client.models.generate_content(
-            model='gemini-3.5-flash',
+            model='gemini-2.0-flash',
             contents=SYSTEM_PROMPT,
             config=types.GenerateContentConfig(
                 tools=shared_tools,
@@ -193,7 +192,7 @@ def ask_gemini(tools_object):
         return json.loads(response.text)
     except Exception as e:
         print(f"💥 Gemini 執行崩潰：{e}")
-        return {"reason": "格式或線路異常", "trades": []}
+        return {"reason": f"Gemini 暫時連線異常 ({str(e)})，保持防禦空倉。", "trades": []}
 
 # ==================== 4. 網頁 HTML 生成與儀表板 ====================
 def generate_html_dashboard():
@@ -222,8 +221,8 @@ def generate_html_dashboard():
     """
 
     for bot_key, name, color, bg_gradient in [
-        ("openai_bot", "OpenAI (ChatGPT-4o) 隊", "text-emerald-400", "from-teal-600 to-emerald-800"), 
-        ("gemini_bot", "Google (Gemini-3.5) 隊", "text-blue-400", "from-blue-600 to-indigo-800")
+        ("openai_bot", "OpenAI (ChatGPT-4o) 隊", "text-emerald-400", "from-gray-700 to-gray-800"), 
+        ("gemini_bot", "Google (Gemini-2.0) 隊", "text-blue-400", "from-blue-600 to-indigo-800")
     ]:
         bot = db[bot_key]
         table_rows = ""
@@ -267,7 +266,6 @@ def generate_html_dashboard():
         total_roi = ((assets - 100000) / 100000) * 100
         roi_color = "text-red-500 font-extrabold" if total_roi >= 0 else "text-green-500 font-extrabold"
         
-        # 提取最新一筆交易的決策理由
         last_reason = "今日暫無新的交易決策理由。"
         if bot["trade_history"]:
             last_reason = bot["trade_history"][-1].get("reason", "未提供具體理由。")
@@ -327,20 +325,12 @@ def generate_html_dashboard():
 
 # ==================== 5. 引擎啟動入口 ====================
 if __name__ == "__main__":
-    print("🤖 正在啟動雙 AI 全自主網頁炒股核心引擎...")
-    
-    # 建立工具實例（防爆機制內建）
+    print("🤖 正在啟動單 AI 全自主網頁炒股核心引擎 (Gemini 獨佔優化版)...")
     tools_manager = StockTools()
     
-    # 第一隊：ChatGPT 聯網看新聞選股
-    print("👉 正在喚醒 OpenAI ChatGPT 隊進行決策...")
-    openai_decision = ask_chatgpt()
-    execute_trades("openai_bot", openai_decision)
-    
-    # 第二隊：Gemini 聯網 + 看 K 圖綜合選股
+    # 略過 ChatGPT，直接進入 Gemini 隊決策
     print("👉 正在喚醒 Google Gemini 隊進行決策...")
     gemini_decision = ask_gemini(tools_manager)
     execute_trades("gemini_bot", gemini_decision)
     
-    # 產出網頁
     generate_html_dashboard()
