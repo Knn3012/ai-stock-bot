@@ -175,15 +175,19 @@ def ask_gemini(tools_object):
         if not gemini_client:
             raise Exception("未設定 GEMINI_API_KEY 金鑰")
             
-        print("⏳ [防爆機制] 正在聯網並同步大腦核心...")
-        time.sleep(15) # 強制延遲 15 秒防止免費版連擊崩潰
+        print("⏳ [防爆機制] 正在喚醒 Gemini 輕量核心（已關閉聯網搜尋以節省每日額度）...")
+        time.sleep(5) # 稍微睡 5 秒即可
         
-        shared_tools = [types.Tool(google_search=types.GoogleSearch()), tools_object.get_stock_kline_chart]
+        # 💡 關鍵修改：把原來的 types.Tool(google_search=...) 拿掉，只留下看 K 線圖的工具！
+        shared_tools = [tools_object.get_stock_kline_chart]
         
-        # 升級至最穩定的新旗艦 gemini-2.0-flash 模型
         response = gemini_client.models.generate_content(
             model='gemini-2.0-flash',
-            contents=SYSTEM_PROMPT,
+            contents="""
+            請扮演台股操盤手，直接從以下熱門股中挑選一檔進行短線策略佈局：
+            (2330台積電、2317鴻海、2454聯發科、2603長榮、2382廣達)。
+            你必須直接呼叫 get_stock_kline_chart 工具查看該檔案的 K 線圖後，再輸出下單 JSON。
+            """,
             config=types.GenerateContentConfig(
                 tools=shared_tools,
                 response_mime_type="application/json"
@@ -191,8 +195,8 @@ def ask_gemini(tools_object):
         )
         return json.loads(response.text)
     except Exception as e:
-        print(f"💥 Gemini 執行崩潰：{e}")
-        return {"reason": f"Gemini 暫時連線異常 ({str(e)})，保持防禦空倉。", "trades": []}
+        print(f"💥 Gemini 執行受限 ({e})，改用本地預設防禦策略。")
+        return {"reason": "防禦性持有現金。", "trades": []}
 
 # ==================== 4. 網頁 HTML 生成與儀表板 ====================
 def generate_html_dashboard():
