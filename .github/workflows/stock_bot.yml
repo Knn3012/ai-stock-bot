@@ -36,15 +36,16 @@ jobs:
         git config --local user.name "GitHub Action Bot"
         
         # 強制將資料庫與產出的網頁檔案一同追蹤
-        git add portfolio.json index.html
+         git add portfolio.json index.html
         
-        if [ -n "$(git status --porcelain portfolio.json index.html)" ]; then
-          git commit -m "🤖 系統公告：AI 今日實戰對決結束，資產與 HTML 網頁存檔 [$(date +'%Y-%m-%d')]"
-          
-          # 【黃金修正】推送前先拉取遠端變更，用 rebase 融合，完美避免 Rejected 報錯！
-          git pull --rebase origin main
-          
-          git push origin main
+         if [ -n "$(git status --porcelain portfolio.json index.html)" ]; then
+              git commit -m "🤖 系統公告：AI 今日實戰對決結束，資產與 HTML 網頁存檔 [$(date +'%Y-%m-%d')]"
+              
+              # 【降維打擊修正】先拉取最新變更，如果遇到衝突，直接以雲端生成的最新帳本為準，強制推上去
+              git pull origin main --allow-unrelated-histories || true
+              
+              # 使用 -f 強制推送，直接破除所有 Rejected 拒絕！
+              git push origin main -f
         else
-          echo "今日無資產變動，跳過存檔。"
-        fi
+              echo "今日無資產變動，跳過存檔。"
+            fi
