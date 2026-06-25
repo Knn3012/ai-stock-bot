@@ -2,7 +2,7 @@ name: AI Stock Match Automated Daily Run
 
 on:
   schedule:
-    # 台灣時間週一至週五早上 08:35 自動執行 (美股收盤，台股開盤前)
+    # 台灣時間週一至週五早上 08:35 自動執行
     - cron: '35 0 * * 1-5' 
   workflow_dispatch: # 允許手動點擊按鈕執行測試
 
@@ -40,7 +40,11 @@ jobs:
         
         if [ -n "$(git status --porcelain portfolio.json index.html)" ]; then
           git commit -m "🤖 系統公告：AI 今日實戰對決結束，資產與 HTML 網頁存檔 [$(date +'%Y-%m-%d')]"
-          git push
+          
+          # 【黃金修正】推送前先拉取遠端變更，用 rebase 融合，完美避免 Rejected 報錯！
+          git pull --rebase origin main
+          
+          git push origin main
         else
           echo "今日無資產變動，跳過存檔。"
         fi
