@@ -58,7 +58,7 @@ DB_FILE = "portfolio.json"
 def load_db():
     if not os.path.exists(DB_FILE):
         init_data = {
-            "openai_bot": {"cash": 100000.0 "holdings": {}, "trade_history": [{"date": str(datetime.date.today()), "action": "HOLD", "code": "NONE", "shares": 0, "price": 0, "fee": 0, "reason": "OpenAI 隊目前處於非賽季維護狀態。"}]},
+            "openai_bot": {"cash": 100000.0, "holdings": {}, "trade_history": [{"date": str(datetime.date.today()), "action": "HOLD", "code": "NONE", "shares": 0, "price": 0, "fee": 0, "reason": "OpenAI 隊目前處於非賽季維護狀態。"}]},
             "gemini_bot": {"cash": 100000.0, "holdings": {}, "trade_history": []},
             "last_updated": str(datetime.date.today())
         }
