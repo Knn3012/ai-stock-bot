@@ -182,7 +182,7 @@ def ask_gemini(tools_object):
         shared_tools = [tools_object.get_stock_kline_chart]
         
         response = gemini_client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             contents="""
             請扮演台股操盤手，直接從以下熱門股中挑選一檔進行短線策略佈局：
             (2330台積電、2317鴻海、2454聯發科、2603長榮、2382廣達)。
