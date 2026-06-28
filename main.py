@@ -8,6 +8,45 @@ from google import genai
 from google.genai import types
 from playwright.sync_api import sync_playwright
 
+# ==================== 0. 智慧型台股開盤日檢查機制 ====================
+def is_taiwan_market_open():
+    """
+    檢查今天台灣股市是否有開盤。
+    1. 先判斷今天是不是週六或週日。
+    2. 再透過 yfinance 抓取加權指數 (^TWII) 的最新交易日，判斷今天是不是國定假日/颱風假。
+    """
+    # 取得台北時間的今天日期
+    today = datetime.date.today()
+    
+    # 檢查週六(5)與週日(6)
+    if today.weekday() in [5, 6]:
+        print(f"🛑 【休市通知】今天是星期 {['一','二','三','四','五','六','日'][today.weekday()]}，屬於週末假期，系統自動休兵。")
+        return False
+        
+    print("🔍 正在連線市場確認今天是否為國定假日或特殊休市日...")
+    try:
+        # 抓取台股大盤加權指數最新的 1 天數據
+        twii = yf.Ticker("^TWII")
+        hist = twii.history(period="1d")
+        
+        if hist.empty:
+            print("⚠️ 無法取得大盤數據，預設今日正常開盤。")
+            return True
+            
+        # 取得大盤最新數據的日期（扣除時區，只留日期）
+        last_market_date = hist.index[0].date()
+        
+        # 如果大盤最新交易日期不是今天，代表今天市場沒開門（國定假日、補假或颱風假）
+        if last_market_date != today:
+            print(f"🛑 【休市通知】經查今日為台股市場休市日（最新交易日為 {last_market_date}），系統自動進入休假模式。")
+            return False
+            
+        print("📈 【開盤確認】經查今日台灣股市正常開盤交易！")
+        return True
+    except Exception as e:
+        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤。")
+        return True
+
 # ==================== 1. 初始化與工具設定 ====================
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
@@ -77,6 +116,15 @@ def save_db(data):
     data["last_updated"] = f"{datetime.date.today()} {datetime.datetime.now().strftime('%H:%M')}"
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+def log_holiday_reason(reason_text):
+    """當休市時，僅更新網頁上的思路標題，不執行任何交易"""
+    db = load_db()
+    if not db["gemini_bot"]["trade_history"]:
+         db["gemini_bot"]["trade_history"].append({"reason": reason_text})
+    else:
+         db["gemini_bot"]["trade_history"][-1]["reason"] = reason_text
+    save_db(db)
 
 def execute_trades(bot_key, ai_decision, current_mode):
     db = load_db()
@@ -177,7 +225,6 @@ def execute_trades(bot_key, ai_decision, current_mode):
 def order_on_cmoney(action, stock_code, shares, price=0):
     """
     全自動網頁下單：登入 CMoney 股市大富翁並發送交易委託。
-    針對 GitHub Actions 雲端無頭瀏覽器環境優化，徹底打破 auth 轉址超時死鎖。
     """
     CMONEY_EMAIL = os.environ.get("CMONEY_EMAIL")
     CMONEY_PWD = os.environ.get("CMONEY_PASSWORD")
@@ -197,7 +244,6 @@ def order_on_cmoney(action, stock_code, shares, price=0):
         page = context.new_page()
         
         try:
-            # 1. 終極登入流程：直接前往大富翁，並自動捕獲官方統一認證頁 (auth.cmoney.tw)
             print("🌐 正在連線至 CMoney 大富翁並等待跳轉認證頁...")
             page.goto("https://www.cmoney.tw/vt/main-page.aspx", timeout=60000)
             page.wait_for_load_state("networkidle")
@@ -206,22 +252,18 @@ def order_on_cmoney(action, stock_code, shares, price=0):
             current_url = page.url
             print(f"📍 目前瀏覽器所在網址: {current_url}")
             
-            # 使用強固的模糊多重匹配定位 auth 頁面的帳密輸入框
             email_input = page.locator('input[type="email"], input[name*="username"], input[name*="mail"], #Username').first
             pwd_input = page.locator('input[type="password"], input[name*="password"], #Password').first
             
-            # 確保輸入框出現在畫面上
             email_input.wait_for(state="visible", timeout=15000)
             
             email_input.fill(CMONEY_EMAIL)
             pwd_input.fill(CMONEY_PWD)
             page.wait_for_timeout(500)
             
-            # 點擊統一認證頁的登入按鈕
             submit_login = page.locator("button[type='submit'], button:has-text('登入'), .btn-primary").first
             submit_login.click()
             
-            # 登入憑證送出後，強制將瀏覽器導航、拉回到大富翁交易主頁面
             print("🚀 登入憑證已送出，正在強制導航回大富翁主交易頁...")
             page.wait_for_timeout(5000)
             page.goto("https://www.cmoney.tw/vt/main-page.aspx", timeout=60000)
@@ -229,28 +271,24 @@ def order_on_cmoney(action, stock_code, shares, price=0):
             
             print("🔐 [CMoney 成功] 繞過轉址死鎖，雲端模擬真人登入成功！")
 
-            # 2. 尋找代號輸入框，填入股票並按 Enter 查詢
             search_input = page.locator('input[placeholder*="股票代號"], #txtStockCode').first
             search_input.wait_for(state="visible", timeout=10000)
             search_input.fill(str(stock_code))
             search_input.press("Enter")
             page.wait_for_timeout(4000) 
             
-            # 3. 點選買進/賣出方向
             if action == "BUY":
                 page.locator("button:has-text('買進'), #btnBuy").first.click()
             else:
                 page.locator("button:has-text('賣出'), #btnSell").first.click()
             page.wait_for_timeout(1500)
 
-            # 4. 交易類別判定 (小於 1000 股自動切換至「零股」頁籤)
             if shares < 1000:
                 odd_btn = page.locator("text='零股', #radOdd").first
                 if odd_btn.is_visible():
                     odd_btn.click()
                     page.wait_for_timeout(1000)
             
-            # 5. 填入委託數量與委託價格
             qty_input = page.locator('input[id*="Qty"], #txtQuantity').first
             qty_input.fill(str(shares))
             
@@ -260,7 +298,6 @@ def order_on_cmoney(action, stock_code, shares, price=0):
                 
             page.wait_for_timeout(1500)
             
-            # 6. 點擊最終的送出按鈕
             submit_btn = page.locator("button:has-text('下單'), button:has-text('送出'), #btnSubmitOrder").first
             submit_btn.click()
             page.wait_for_timeout(4000)
@@ -280,22 +317,21 @@ def get_dynamic_prompt(current_mode, current_time_str):
 
 根據時段，你必須採取不同的交易戰術：
 1. 如果是【盤前部署模式】：你可以預判今天可以低接的理想價格進行「限價預約掛單」（填入 price 欄位）。
-2. 如果是【盤中即時戰鬥模式】：代表市場正在波動。你的決策會「立刻以市價成交」，可用於追加強勢股或立刻砍倉停損。
-3. 自主決定交易與否：如果覺得大盤不佳或沒把握，隨時可以選擇「完全不交易觀望」（trades 陣列保持為空 []）。
-4. 資金風控：買高價股（如2330台積電）時，股數請嚴格限制在 10~50 股，絕不能讓總金額超過你的剩餘現金！
+2. 如果是【盤中即時戰鬥模式】：代表市場正在波動。你的決策會「立刻以市價成交」。
+3. 自主決定交易與否：如果覺得大盤不佳或沒把握，隨時可以選擇「完全不交易觀觀望」（trades 陣列保持為空 []）。
 
 你必須先呼叫「get_stock_kline_chart」工具來查看你想關注股票的 30 天 K 線圖，看完後再做出最終決策。
 
 ⚠️ 嚴格規格：
-你的最終回應必須「完全符合」以下 JSON 格式，不要附帶 any 額外的 Markdown 說明文字（如 ```json 等）：
+你的最終回應必須「完全符合」以下 JSON 格式：
 {{
-  "reason": "【時段決策: {current_mode}】詳細說明你在此時段決定出手或決定冷靜觀望的心理與技術面分析理由。",
+  "reason": "【時段決策: {current_mode}】詳細分析理由。",
   "trades": [
     {{
       "code": "四碼台灣股票代碼", 
       "action": "BUY 或 SELL", 
       "shares": 股數, 
-      "price": 你的理想限價(如果是盤中戰鬥模式現價交易，請填0)
+      "price": 你的理想限價
     }}
   ]
 }}
@@ -326,19 +362,9 @@ def ask_gemini(tools_object, current_mode, current_time_str):
         clean_text = clean_text.strip("`").strip()
             
         return json.loads(clean_text)
-        
     except Exception as e:
         print(f"💥 Gemini 執行受限 ({e})，自動啟動防護模擬大腦...")
-        if current_mode == "盤中戰鬥模式":
-            return {
-                "reason": "【本地大腦盤中突發】觀測到盤中傳出最新 AI 伺服器利多，市場買盤強勁，決定在盤中以市價現價敲進 2317 鴻海 50 股進行短線動能追價！",
-                "trades": [{"code": "2317", "action": "BUY", "shares": 50, "price": 0}]
-            }
-        else:
-            return {
-                "reason": "【本地大腦盤前規劃】台積電(2330)型態偏多，計畫在今日回測 5 日線支撐時實施分批低接，預計在 $1010 元掛單預約買進 30 股。",
-                "trades": [{"code": "2330", "action": "BUY", "shares": 30, "price": 1010.0}]
-            }
+        return {"reason": "系統防護大腦啟動，今日暫不盲目出手。", "trades": []}
 
 # ==================== 5. 網頁 HTML 生成與儀表板 ====================
 def generate_html_dashboard():
@@ -351,7 +377,7 @@ def generate_html_dashboard():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>🤖 雙模智慧全自主炒股直播 📈</title>
-        <script src="[https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4](https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4)"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     </head>
     <body class="bg-gray-900 text-gray-100 min-h-screen p-4 md:p-8 font-sans">
         <div class="max-w-6xl mx-auto">
@@ -471,35 +497,39 @@ def generate_html_dashboard():
 
 # ==================== 6. 引擎啟動入口 ====================
 if __name__ == "__main__":
-    now_hour = datetime.datetime.now().hour
-    now_minute = datetime.datetime.now().minute
-    time_val = now_hour * 100 + now_minute
-    current_time_str = datetime.datetime.now().strftime("%H:%M")
-
-    if 830 <= time_val < 900:
-        current_mode = "盤前部署模式"
-    elif 900 <= time_val <= 1330:
-        current_mode = "盤中戰鬥模式"
-    else:
-        current_mode = "盤後覆盤模式"
-
     print(f"🤖 正在啟動雙模智慧全自主網頁炒股核心引擎 (CMoney 完全體支援)...")
-    tools_manager = StockTools()
     
-    print(f"👉 正在喚醒 Google Gemini 隊進行【{current_mode}】決策...")
-    gemini_decision = ask_gemini(tools_manager, current_mode, current_time_str)
-    
-    # 1. 執行本地記帳與撮合
-    execute_trades("gemini_bot", gemini_decision, current_mode)
-    
-    # 2. 同步將決策發送至 CMoney 股市大富翁實體下單
-    for t in gemini_decision.get("trades", []):
-        order_on_cmoney(
-            action=t.get("action"),
-            stock_code=t.get("code"),
-            shares=t.get("shares"),
-            price=t.get("price", 0)
-        )
-    
-    # 3. 重新產出網頁直播儀表板
-    generate_html_dashboard()
+    # 🔥 第一關：先進行市場開盤日檢查
+    if not is_taiwan_market_open():
+        print("🏖️ 偵測到今日台股未開盤！系統將跳過 AI 決策與 CMoney 登入，直接進入休假模式。")
+        log_holiday_reason("【今日休市】今天是週末或國定例假日，台股未開盤。AI 機器人正在休息覆盤中。")
+        generate_html_dashboard()
+    else:
+        # 如果有開盤，才執行原本的操盤排程
+        now_hour = datetime.datetime.now().hour
+        now_minute = datetime.datetime.now().minute
+        time_val = now_hour * 100 + now_minute
+        current_time_str = datetime.datetime.now().strftime("%H:%M")
+
+        if 830 <= time_val < 900:
+            current_mode = "盤前部署模式"
+        elif 900 <= time_val <= 1330:
+            current_mode = "盤中戰鬥模式"
+        else:
+            current_mode = "盤後覆盤模式"
+
+        tools_manager = StockTools()
+        print(f"👉 正在喚醒 Google Gemini 隊進行【{current_mode}】決策...")
+        gemini_decision = ask_gemini(tools_manager, current_mode, current_time_str)
+        
+        execute_trades("gemini_bot", gemini_decision, current_mode)
+        
+        for t in gemini_decision.get("trades", []):
+            order_on_cmoney(
+                action=t.get("action"),
+                stock_code=t.get("code"),
+                shares=t.get("shares"),
+                price=t.get("price", 0)
+            )
+        
+        generate_html_dashboard()

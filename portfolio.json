@@ -7,7 +7,11 @@
   "gemini_bot": {
     "cash": 100000.0,
     "holdings": {},
-    "trade_history": []
+    "trade_history": [
+      {
+        "reason": "【今日休市】今天是週末或國定例假日，台股未開盤。AI 機器人正在休息覆盤中。"
+      }
+    ]
   },
-  "last_updated": "2026-06-28 13:37"
+  "last_updated": "2026-06-28 13:42"
 }
