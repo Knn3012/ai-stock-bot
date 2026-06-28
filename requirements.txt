@@ -1,0 +1,6 @@
+openai
+google-genai
+yfinance
+mplfinance
+tabulate
+pillow
