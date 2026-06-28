@@ -1,0 +1,68 @@
+name: 🤖 台股智慧雙模 AI 自動化操盤系統
+
+on:
+  # 1. 核心自動排程：週一至週五，一天自動打卡啟動三次
+  schedule:
+    # 第一次打卡：台北時間 08:30 (盤前部署模式 - 抓新聞、送預約掛單)
+    - cron: '30 0 * * 1-5'
+    
+    # 第二次打卡：台北時間 11:30 (盤中戰鬥模式 - 看現價、市價即時追擊)
+    - cron: '30 3 * * 1-5'
+    
+    # 第三次打卡：台北時間 14:00 (盤後覆盤模式 - 統計損益、產出 HTML 儀表板)
+    - cron: '0 6 * * 1-5'
+
+  # 2. 保留手動測試按鈕，隨時可以在 GitHub Actions 網頁點擊「Run workflow」測試
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  trading_job:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: 📥 複製專案程式碼 (Checkout)
+      uses: actions/checkout@v4
+
+    - name: 🐍 初始化 Python 3.10 雲端環境
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+
+    - name: 📦 安裝量化與網頁自動化核心依賴套件
+      run: |
+        python -m pip install --upgrade pip
+        pip install google-genai yfinance mplfinance playwright
+
+    - name: 🌐 初始化 Playwright 隱形瀏覽器與系統依賴庫
+      run: |
+        python -m playwright install chromium
+        python -m playwright install-deps chromium
+
+    - name: 🚀 依據當前台北時間，喚醒核心炒股引擎
+      env:
+        # 帶入你的 Google Gemini API 金鑰
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        # 帶入你的 CMoney 股市大富翁登入憑證
+        CMONEY_EMAIL: ${{ secrets.CMONEY_EMAIL }}
+        CMONEY_PASSWORD: ${{ secrets.CMONEY_PASSWORD }}
+      run: |
+        python main.py
+
+    - name: 📝 自動將最新的交易紀錄與 index.html 網頁推回 GitHub
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action Bot"
+        
+        # 檢查是否有檔案更新（portfolio.json 或 index.html）
+        if [ -n "$(git status --porcelain)" ]; then
+          git add portfolio.json index.html || true
+          git commit -m "🤖 [AI 自動操盤數據同步] 時段運行完畢，更新資產庫存與直播面板"
+          git push
+          echo "✅ 成功將最新資產狀態推回 GitHub 倉庫！"
+        else
+          echo "✨ 本次運行無庫存變動，跳過 Commit。"
+        fi
