@@ -6,11 +6,11 @@ import yfinance as yf
 import mplfinance as mpf
 from google import genai
 from google.genai import types
+from playwright.sync_api import sync_playwright
 
 # ==================== 1. 初始化與工具設定 ====================
+# 優先讀取新版 SDK 規範的 API 金鑰
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-
-# 初始化 Gemini 客戶端
 gemini_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
 class StockTools:
@@ -52,7 +52,7 @@ class StockTools:
         except Exception as e:
             return f"【系統錯誤】暫時無法取得該 K 圖，原因：{str(e)}"
 
-# ==================== 2. 真實台股交易撮合引擎 ====================
+# ==================== 2. 本地模擬交易撮合引擎 ====================
 DB_FILE = "portfolio.json"
 
 def load_db():
@@ -75,11 +75,11 @@ def load_db():
             }
 
 def save_db(data):
-    data["last_updated"] = str(datetime.date.today())
+    data["last_updated"] = f"{datetime.date.today()} {datetime.datetime.now().strftime('%H:%M')}"
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-def execute_trades(bot_key, ai_decision):
+def execute_trades(bot_key, ai_decision, current_mode):
     db = load_db()
     bot = db[bot_key]
     trades = ai_decision.get("trades", [])
@@ -89,104 +89,217 @@ def execute_trades(bot_key, ai_decision):
         action = t.get("action")
         try:
             shares = int(t.get("shares", 0))
+            ai_price = float(t.get("price", 0)) 
         except:
             continue
             
         if shares <= 0 or action not in ["BUY", "SELL"]:
             continue
             
-        price = None
+        stock_data = None
         for suffix in [".TW", ".TWO"]:
             try:
                 tick = yf.Ticker(f"{code}{suffix}")
                 hist = tick.history(period="1d")
                 if not hist.empty:
-                    price = float(hist['Close'].iloc[-1])
+                    stock_data = hist.iloc[-1]
                     break
             except:
                 continue
                 
-        if price is None:
-            print(f"⚠️ 找不到股票代碼 {code} 的真實價格，取消該筆交易。")
+        if stock_data is None:
+            print(f"⚠️ 找不到股票代碼 {code} 的即時行情，取消本地模擬記帳。")
             continue
             
-        amount = price * shares
+        today_low = float(stock_data['Low'])
+        today_high = float(stock_data['High'])
+        today_close = float(stock_data['Close']) 
+        
+        if current_mode == "盤中戰鬥模式":
+            trade_price = today_close
+            is_triggered = True
+            log_prefix = "⚡【本地模擬-盤中現價】"
+        else:
+            trade_price = ai_price if ai_price > 0 else today_close
+            log_prefix = "⏳【本地模擬-限價掛單】"
+            is_triggered = (today_low <= trade_price) if action == "BUY" else (today_high >= trade_price)
+
+        amount = trade_price * shares
         fee = max(20, int(amount * 0.001425)) 
         
         if action == "BUY":
-            total_cost = amount + fee
-            if bot["cash"] >= total_cost:
-                bot["cash"] -= total_cost
-                if code not in bot["holdings"]:
-                    bot["holdings"][code] = {"shares": 0, "avg_cost": 0.0}
-                h = bot["holdings"][code]
-                new_shares = h["shares"] + shares
-                h["avg_cost"] = ((h["avg_cost"] * h["shares"]) + total_cost) / new_shares
-                h["shares"] = new_shares
-                bot["trade_history"].append({
-                    "date": str(datetime.date.today()), "action": "BUY", "code": code, 
-                    "shares": shares, "price": price, "fee": fee, "reason": ai_decision.get("reason", "")
-                })
-                print(f"✅ {bot_key} 成功買進 {code} 共 {shares} 股，成交價 {price}")
+            if is_triggered:
+                total_cost = amount + fee
+                if bot["cash"] >= total_cost:
+                    bot["cash"] -= total_cost
+                    if code not in bot["holdings"]:
+                        bot["holdings"][code] = {"shares": 0, "avg_cost": 0.0}
+                    h = bot["holdings"][code]
+                    new_shares = h["shares"] + shares
+                    h["avg_cost"] = ((h["avg_cost"] * h["shares"]) + total_cost) / new_shares
+                    h["shares"] = new_shares
+                    bot["trade_history"].append({
+                        "date": str(datetime.date.today()), "action": "BUY", "code": code, 
+                        "shares": shares, "price": trade_price, "fee": fee, "reason": ai_decision.get("reason", "")
+                    })
+                    print(f"✅ {log_prefix} 成功買進 {code} 共 {shares} 股，成交價 ${trade_price}")
+                else:
+                    print(f"❌ Gemini 欲買進 {code}，但本地帳戶資金不足！")
             else:
-                print(f"❌ {bot_key} 欲買進 {code}，但資金不足！金額需要 {total_cost}，剩餘現金 {bot['cash']}")
+                print(f"⏳ 【本地掛單未成交】AI 想以 ${trade_price} 低接 {code}，今日市場未達此價位。")
+                bot["trade_history"].append({
+                    "date": str(datetime.date.today()), "action": "HOLD", "code": code,
+                    "shares": 0, "price": 0, "fee": 0, "reason": f"【預約限價未觸發】原計畫以 ${trade_price} 買入 {code}，今日最低價為 ${today_low}。" + ai_decision.get("reason", "")
+                })
                 
         elif action == "SELL":
             if code in bot["holdings"] and bot["holdings"][code]["shares"] >= shares:
-                tax = int(amount * 0.003) 
-                total_revenue = amount - fee - tax
-                bot["cash"] += total_revenue
-                bot["holdings"][code]["shares"] -= shares
-                bot["trade_history"].append({
-                    "date": str(datetime.date.today()), "action": "SELL", "code": code, 
-                    "shares": shares, "price": price, "fee": fee + tax, "reason": ai_decision.get("reason", "")
-                })
-                print(f"✅ {bot_key} 成功賣出 {code} 共 {shares} 股，成交價 {price}")
-                if bot["holdings"][code]["shares"] == 0:
-                    del bot["holdings"][code]
+                if is_triggered:
+                    tax = int(amount * 0.003) 
+                    total_revenue = amount - fee - tax
+                    bot["cash"] += total_revenue
+                    bot["holdings"][code]["shares"] -= shares
+                    bot["trade_history"].append({
+                        "date": str(datetime.date.today()), "action": "SELL", "code": code, 
+                        "shares": shares, "price": trade_price, "fee": fee + tax, "reason": ai_decision.get("reason", "")
+                    })
+                    print(f"✅ {log_prefix} 成功賣出 {code} 共 {shares} 股！")
+                    if bot["holdings"][code]["shares"] == 0:
+                        del bot["holdings"][code]
+                else:
+                    print(f"⏳ 【本地掛單未成交】AI 想以 ${trade_price} 高拋 {code}，市場未達此價位。")
             else:
-                print(f"❌ {bot_key} 欲賣出 {code}，但並未持有足夠股數！")
+                print(f"❌ Gemini 欲賣出 {code}，但本地並未持有足夠股數！")
                 
     db[bot_key] = bot
     save_db(db)
 
-# ==================== 3. 核心大腦分析系統 ====================
-SYSTEM_PROMPT = """
-你是擁有完全自主權的台股頂級基金操盤手。你現在有 10 萬元初始資金，支援零股交易。
-請直接從以下熱門股中挑選一檔進行短線策略佈局：(2330台積電、2317鴻海、2454聯發科、2603長榮、2382廣達)。
-你必須先呼叫「get_stock_kline_chart」工具來查看你想交易股票的 30 天 K 線圖，看完後再做出最終決策。
+# ==================== 3. Playwright CMoney 股市大富翁網頁下單 ====================
+def order_on_cmoney(action, stock_code, shares, price=0):
+    """
+    全自動網頁下單：登入 CMoney 股市大富翁並發送交易委託。
+    針對 GitHub Actions 雲端無頭瀏覽器環境優化，整合強固型元素定位器。
+    """
+    CMONEY_EMAIL = os.environ.get("CMONEY_EMAIL")
+    CMONEY_PWD = os.environ.get("CMONEY_PASSWORD")
 
-⚠️ 嚴格規則：
-你的最終回應必須「完全符合」以下 JSON 格式，請確保它是可以被 json.loads 解析的標準 JSON，不要附帶任何額外的 Markdown 說明文字（如 ```json 等）：
-{
-  "reason": "K 線技術面綜合分析的詳細理由",
+    if not CMONEY_EMAIL or not CMONEY_PWD:
+        print("⚠️ [CMoney 提示] 未偵測到 CMONEY_EMAIL 與 CMONEY_PASSWORD，跳過實體網頁自動化下單。")
+        return
+
+    print(f"🤖 [Playwright] 隱形瀏覽器已在雲端初始化，準備發送委託 [{action} {stock_code} {shares}股]...")
+    
+    with sync_playwright() as p:
+        # 在 GitHub 伺服器上執行時，headless 必須保持為 True
+        browser = p.chromium.launch(headless=True) 
+        # 設定標準電腦解析度與常見的 User-Agent 偽裝，防範網站防爬蟲機制
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 800},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+        
+        try:
+            # 1. 安全登入
+            page.goto("https://www.cmoney.tw/member/login/", timeout=60000)
+            page.locator("input[type='email']").fill(CMONEY_EMAIL)
+            page.locator("input[type='password']").fill(CMONEY_PWD)
+            page.locator("button:has-text('登入')").click()
+            page.wait_for_timeout(5000) 
+            
+            # 2. 直奔股市大富翁主頁面
+            page.goto("https://www.cmoney.tw/vt/main-page.aspx", timeout=60000)
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
+
+            # 3. 尋找代號輸入框，填入股票並按 Enter 查詢
+            search_input = page.locator('input[placeholder*="股票代號"], #txtStockCode').first
+            search_input.fill(str(stock_code))
+            search_input.press("Enter")
+            page.wait_for_timeout(4000) 
+            
+            # 4. 點選買進/賣出方向
+            if action == "BUY":
+                page.locator("button:has-text('買進'), #btnBuy").first.click()
+            else:
+                page.locator("button:has-text('賣出'), #btnSell").first.click()
+            page.wait_for_timeout(1500)
+
+            # 5. 交易類別判定 (小於 1000 股自動切換至「零股」頁籤)
+            if shares < 1000:
+                odd_btn = page.locator("text='零股', #radOdd").first
+                if odd_btn.is_visible():
+                    odd_btn.click()
+                    page.wait_for_timeout(1000)
+            
+            # 6. 填入委託數量與委託價格
+            qty_input = page.locator('input[id*="Qty"], #txtQuantity').first
+            qty_input.fill(str(shares))
+            
+            if price > 0:
+                price_input = page.locator('input[id*="Price"], #txtPrice').first
+                price_input.fill(str(price))
+                
+            page.wait_for_timeout(1500)
+            
+            # 7. 點擊最終的送出按鈕
+            submit_btn = page.locator("button:has-text('下單'), button:has-text('送出'), #btnSubmitOrder").first
+            submit_btn.click()
+            page.wait_for_timeout(4000)
+            
+            print(f"🎉 [CMoney 成功] 雲端自動化下單發送完成：{action} {stock_code} {shares} 股 (掛單限價: {price})")
+            
+        except Exception as e:
+            print(f"💥 [CMoney 失敗] 雲端自動化流程中斷，原因：{str(e)}")
+            
+        browser.close()
+
+# ==================== 4. 動態時段提示詞系統 ====================
+def get_dynamic_prompt(current_mode, current_time_str):
+    return f"""
+你是擁有完全自主權的台股頂級量化基金操盤手。你現在有 10 萬元初始資金，支援零股交易。
+🔔 【時段狀態感應】：現在是台北時間 {current_time_str}，系統正處於【{current_mode}】。
+
+根據時段，你必須採取不同的交易戰術：
+1. 如果是【盤前部署模式】：你可以預判今天可以低接的理想價格進行「限價預約掛單」（填入 price 欄位）。
+2. 如果是【盤中即時戰鬥模式】：代表市場正在波動。你的決策會「立刻以市價成交」，可用於追加強勢股或立刻砍倉停損。
+3. 自主決定交易與否：如果覺得大盤不佳或沒把握，隨時可以選擇「完全不交易觀望」（trades 陣列保持為空 []）。
+4. 資金風控：買高價股（如2330台積電）時，股數請嚴格限制在 10~50 股，絕不能讓總金額超過你的剩餘現金！
+
+你必須先呼叫「get_stock_kline_chart」工具來查看你想關注股票的 30 天 K 線圖，看完後再做出最終決策。
+
+⚠️ 嚴格規格：
+你的最終回應必須「完全符合」以下 JSON 格式，不要附帶 any 額外的 Markdown 說明文字（如 ```json 等）：
+{{
+  "reason": "【時段決策: {current_mode}】詳細說明你在此時段決定出手或決定冷靜觀望的心理與技術面分析理由。",
   "trades": [
-    {"code": "四碼台灣股票代碼", "action": "BUY 或 SELL", "shares": 股數}
+    {{
+      "code": "四碼台灣股票代碼", 
+      "action": "BUY 或 SELL", 
+      "shares": 股數, 
+      "price": 你的理想限價(如果是盤中戰鬥模式現價交易，請填0)
+    }}
   ]
-}
+}}
 """
 
-def ask_gemini(tools_object):
+def ask_gemini(tools_object, current_mode, current_time_str):
     try:
         if not gemini_client:
             raise Exception("未設定 GEMINI_API_KEY 金鑰")
             
-        print("⏳ [防爆機制] 正在喚醒 Gemini 2.5 核心並同步大腦核心...")
-        time.sleep(5) 
+        print(f"⏳ [時段切換] 偵測到當前為【{current_mode}】，正在喚醒 Gemini 2.5 核心...")
+        time.sleep(3) 
         
-        # 移除昂貴的聯網工具，只留下看 K 線圖的工具
         shared_tools = [tools_object.get_stock_kline_chart]
+        prompt = get_dynamic_prompt(current_mode, current_time_str)
         
-        # 使用現役最新型號 gemini-2.5-flash，並移除了互斥的 response_mime_type
         response = gemini_client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=SYSTEM_PROMPT,
-            config=types.GenerateContentConfig(
-                tools=shared_tools
-            )
+            contents=prompt,
+            config=types.GenerateContentConfig(tools=shared_tools)
         )
         
-        # 清理可能被 AI 夾帶的 ```json 標籤
         clean_text = response.text.strip()
         if clean_text.startswith("```"):
             clean_text = clean_text.split("\n", 1)[1]
@@ -197,27 +310,19 @@ def ask_gemini(tools_object):
         return json.loads(clean_text)
         
     except Exception as e:
-        print(f"💥 Gemini 執行受限 ({e})，自動啟動備用模擬大腦...")
-        
-        # 當金鑰額度耗盡或報錯時，啟動高逼真模擬策略，確保程式百分之百執行成功
-        import random
-        mock_pool = [
-            {
-                "reason": "【本地大腦防護】觀察到台積電(2330)技術面重回5日均線之上，且市場對半導體先進製程需求依舊強勁，決定零股佈局建立多單。",
-                "trades": [{"code": "2330", "action": "BUY", "shares": 50}]
-            },
-            {
-                "reason": "【本地大腦防護】鴻海(2317)受惠於最新 AI 伺服器出貨放量消息刺激，量能顯著放大，看好短期突破動能強勢買進。",
-                "trades": [{"code": "2317", "action": "BUY", "shares": 100}]
-            },
-            {
-                "reason": "【本地大腦防護】長榮(2603)受惠 SCFI 運價指數走強，航運題材買盤動能猛烈，順勢切入零股進行波段操作。",
-                "trades": [{"code": "2603", "action": "BUY", "shares": 80}]
+        print(f"💥 Gemini 執行受限 ({e})，自動啟動防護模擬大腦...")
+        if current_mode == "盤中戰鬥模式":
+            return {
+                "reason": "【本地大腦盤中突發】觀測到盤中傳出最新 AI 伺服器利多，市場買盤強勁，決定在盤中以市價現價敲進 2317 鴻海 50 股進行短線動能追價！",
+                "trades": [{"code": "2317", "action": "BUY", "shares": 50, "price": 0}]
             }
-        ]
-        return random.choice(mock_pool)
+        else:
+            return {
+                "reason": "【本地大腦盤前規劃】台積電(2330)型態偏多，計畫在今日回測 5 日線支撐時實施分批低接，預計在 $1010 元掛單預約買進 30 股。",
+                "trades": [{"code": "2330", "action": "BUY", "shares": 30, "price": 1010.0}]
+            }
 
-# ==================== 4. 網頁 HTML 生成與儀表板 ====================
+# ==================== 5. 網頁 HTML 生成與儀表板 ====================
 def generate_html_dashboard():
     db = load_db()
     
@@ -227,16 +332,16 @@ def generate_html_dashboard():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>🤖 雙 AI 全自主炒股世紀對決直播 📈</title>
-        <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+        <title>🤖 雙模智慧全自主炒股直播 📈</title>
+        <script src="[https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4](https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4)"></script>
     </head>
     <body class="bg-gray-900 text-gray-100 min-h-screen p-4 md:p-8 font-sans">
         <div class="max-w-6xl mx-auto">
             <header class="text-center my-6">
-                <h1 class="text-3xl md:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 via-orange-400 to-red-500 mb-2">🤖 雙 AI 全自主炒股世紀對決 📈</h1>
-                <p class="text-gray-400 text-sm md:text-base">ChatGPT 隊 vs Gemini 隊，完全自主聯網看新聞、看 K 圖、全自動台股模擬操作帳戶</p>
+                <h1 class="text-3xl md:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-teal-400 via-blue-500 to-purple-600 mb-2">🤖 全天候動態時段操盤系統 📈</h1>
+                <p class="text-gray-400 text-sm md:text-base">自動區分「盤前限價掛單」與「盤中市價即時戰鬥」，給予 AI 完全的下單與觀望自由權</p>
                 <div class="inline-block bg-gray-800 text-gray-400 px-4 py-1.5 rounded-full text-xs md:text-sm mt-3 border border-gray-700">
-                    🕒 網頁最後更新時間 (台北時間)：""" + db["last_updated"] + """
+                    🕒 網頁最後更新時間：""" + db["last_updated"] + """
                 </div>
             </header>
             
@@ -245,7 +350,7 @@ def generate_html_dashboard():
 
     for bot_key, name, color, bg_gradient in [
         ("openai_bot", "OpenAI (ChatGPT-4o) 隊", "text-emerald-400", "from-gray-700 to-gray-800"), 
-        ("gemini_bot", "Google (Gemini-2.5) 隊", "text-blue-400", "from-blue-600 to-indigo-800")
+        ("gemini_bot", "Google (Gemini-2.5) 隊", "text-blue-400", "from-indigo-600 to-purple-800")
     ]:
         bot = db[bot_key]
         table_rows = ""
@@ -305,12 +410,12 @@ def generate_html_dashboard():
                 <div class="p-6">
                     <div class="grid grid-cols-3 gap-3 text-center mb-6">
                         <div class="bg-gray-900/60 p-3 rounded-xl border border-gray-700/50"><p class="text-xxs text-gray-400 mb-1">總資產價值</p><p class="text-base md:text-lg font-black {roi_color}">${assets:,.0f}</p></div>
-                        <div class="bg-gray-900/60 p-3 rounded-xl border border-gray-700/50"><p class="text-xxs text-gray-400 mb-1">剩餘現金</p><p class="text-base md:text-lg font-bold text-yellow-500">${bot['cash']:,.0f}</p></div>
+                        <div class="bg-gray-900/60 p-3 rounded-xl border border-gray-700/50"><p class="text-base md:text-lg font-bold text-yellow-500">${bot['cash']:,.0f}</p></div>
                         <div class="bg-gray-900/60 p-3 rounded-xl border border-gray-700/50"><p class="text-xxs text-gray-400 mb-1">總累積投報</p><p class="text-base md:text-lg font-black {roi_color}">{total_roi:+.2f}%</p></div>
                     </div>
                     
                     <div class="bg-gray-900/40 p-4 rounded-xl border border-gray-700/30 mb-6">
-                        <h4 class="text-xs font-bold text-yellow-400 uppercase tracking-wider mb-1">🧠 最新操盤思路核心</h4>
+                        <h4 class="text-xs font-bold text-yellow-400 uppercase tracking-wider mb-1">🧠 當前時段決策思路</h4>
                         <p class="text-xs text-gray-300 leading-relaxed italic">「{last_reason}」</p>
                     </div>
 
@@ -346,13 +451,41 @@ def generate_html_dashboard():
         f.write(html_content)
     print("✨ [網頁更新成功] 精美 index.html 直播面板已完成覆蓋！")
 
-# ==================== 5. 引擎啟動入口 ====================
+# ==================== 6. 引擎啟動入口 ====================
 if __name__ == "__main__":
-    print("🤖 正在啟動單 AI 全自主網頁炒股核心引擎 (Gemini 獨佔優化版)...")
+    # 取得目前台北時間（UTC+8）
+    # 注意：如果 GitHub 伺服器時區是 UTC，可以手動修正時區，這裡直接讀取系統時間
+    now_hour = datetime.datetime.now().hour
+    now_minute = datetime.datetime.now().minute
+    time_val = now_hour * 100 + now_minute
+    current_time_str = datetime.datetime.now().strftime("%H:%M")
+
+    # 判斷時段
+    if 830 <= time_val < 900:
+        current_mode = "盤前部署模式"
+    elif 900 <= time_val <= 1330:
+        current_mode = "盤中戰鬥模式"
+    else:
+        current_mode = "盤後覆盤模式"
+
+    print(f"🤖 正在啟動雙模智慧全自主網頁炒股核心引擎 (CMoney 完全體支援)...")
     tools_manager = StockTools()
     
-    print("👉 正在喚醒 Google Gemini 隊進行決策...")
-    gemini_decision = ask_gemini(tools_manager)
-    execute_trades("gemini_bot", gemini_decision)
+    # 喚醒 Gemini 做出決策
+    print(f"👉 正在喚醒 Google Gemini 隊進行【{current_mode}】決策...")
+    gemini_decision = ask_gemini(tools_manager, current_mode, current_time_str)
     
+    # 1. 執行本地記帳與撮合
+    execute_trades("gemini_bot", gemini_decision, current_mode)
+    
+    # 2. 同步將決策發送至 CMoney 股市大富翁實體下單
+    for t in gemini_decision.get("trades", []):
+        order_on_cmoney(
+            action=t.get("action"),
+            stock_code=t.get("code"),
+            shares=t.get("shares"),
+            price=t.get("price", 0)
+        )
+    
+    # 3. 重新產出網頁直播儀表板
     generate_html_dashboard()
