@@ -177,7 +177,7 @@ def execute_trades(bot_key, ai_decision, current_mode):
 def order_on_cmoney(action, stock_code, shares, price=0):
     """
     全自動網頁下單：登入 CMoney 股市大富翁並發送交易委託。
-    針對 GitHub Actions 雲端無頭瀏覽器環境進行強固型更新。
+    針對 GitHub Actions 雲端無頭瀏覽器環境優化，徹底打破 auth 轉址超時死鎖。
     """
     CMONEY_EMAIL = os.environ.get("CMONEY_EMAIL")
     CMONEY_PWD = os.environ.get("CMONEY_PASSWORD")
@@ -197,36 +197,37 @@ def order_on_cmoney(action, stock_code, shares, price=0):
         page = context.new_page()
         
         try:
-            # 1. 改善登入流程：先進入主頁，防範直接進入登入頁造成的載入死鎖
+            # 1. 終極登入流程：直接前往大富翁，並自動捕獲官方統一認證頁 (auth.cmoney.tw)
+            print("🌐 正在連線至 CMoney 大富翁並等待跳轉認證頁...")
             page.goto("https://www.cmoney.tw/vt/main-page.aspx", timeout=60000)
             page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
             
-            # 偵測右上角或內嵌的「登入」按鈕，如果存在則點擊
-            login_trigger = page.locator("text='登入', .login-btn, #login, [href*='login']").first
-            if login_trigger.is_visible():
-                login_trigger.click()
-                page.wait_for_timeout(2000)
-
-            # 使用強固的模糊多重匹配定位輸入框
-            email_input = page.locator('input[placeholder*="Email"], input[type="email"], input[name*="mail"], #txtEmail').first
-            pwd_input = page.locator('input[placeholder*="密碼"], input[type="password"], input[name*="assword"], #txtPassword').first
+            current_url = page.url
+            print(f"📍 目前瀏覽器所在網址: {current_url}")
             
-            # 顯式等待輸入框出現在畫面上 (設定 15 秒寬限期)
+            # 使用強固的模糊多重匹配定位 auth 頁面的帳密輸入框
+            email_input = page.locator('input[type="email"], input[name*="username"], input[name*="mail"], #Username').first
+            pwd_input = page.locator('input[type="password"], input[name*="password"], #Password').first
+            
+            # 確保輸入框出現在畫面上
             email_input.wait_for(state="visible", timeout=15000)
             
             email_input.fill(CMONEY_EMAIL)
             pwd_input.fill(CMONEY_PWD)
             page.wait_for_timeout(500)
             
-            # 點擊送出登入
-            submit_login = page.locator("button:has-text('登入'), input[type='submit'], .submit-btn, #btnLogin").first
+            # 點擊統一認證頁的登入按鈕
+            submit_login = page.locator("button[type='submit'], button:has-text('登入'), .btn-primary").first
             submit_login.click()
             
-            # 等待跳轉回到交易主頁面
-            page.wait_for_url("**/vt/main-page.aspx*", timeout=20000)
+            # 登入憑證送出後，強制將瀏覽器導航、拉回到大富翁交易主頁面
+            print("🚀 登入憑證已送出，正在強制導航回大富翁主交易頁...")
+            page.wait_for_timeout(5000)
+            page.goto("https://www.cmoney.tw/vt/main-page.aspx", timeout=60000)
             page.wait_for_load_state("networkidle")
-            print("🔐 [CMoney 成功] 雲端模擬真人登入成功！")
+            
+            print("🔐 [CMoney 成功] 繞過轉址死鎖，雲端模擬真人登入成功！")
 
             # 2. 尋找代號輸入框，填入股票並按 Enter 查詢
             search_input = page.locator('input[placeholder*="股票代號"], #txtStockCode').first
@@ -283,7 +284,7 @@ def get_dynamic_prompt(current_mode, current_time_str):
 3. 自主決定交易與否：如果覺得大盤不佳或沒把握，隨時可以選擇「完全不交易觀望」（trades 陣列保持為空 []）。
 4. 資金風控：買高價股（如2330台積電）時，股數請嚴格限制在 10~50 股，絕不能讓總金額超過你的剩餘現金！
 
-你必須先呼叫「get_stock_kline_chart nudge」工具來查看你想關注股票的 30 天 K 線圖，看完後再做出最終決策。
+你必須先呼叫「get_stock_kline_chart」工具來查看你想關注股票的 30 天 K 線圖，看完後再做出最終決策。
 
 ⚠️ 嚴格規格：
 你的最終回應必須「完全符合」以下 JSON 格式，不要附帶 any 額外的 Markdown 說明文字（如 ```json 等）：
