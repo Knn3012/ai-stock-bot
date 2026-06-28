@@ -9,7 +9,6 @@ from google.genai import types
 from playwright.sync_api import sync_playwright
 
 # ==================== 1. 初始化與工具設定 ====================
-# 優先讀取新版 SDK 規範的 API 金鑰
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
@@ -178,7 +177,7 @@ def execute_trades(bot_key, ai_decision, current_mode):
 def order_on_cmoney(action, stock_code, shares, price=0):
     """
     全自動網頁下單：登入 CMoney 股市大富翁並發送交易委託。
-    針對 GitHub Actions 雲端無頭瀏覽器環境優化，整合強固型元素定位器。
+    針對 GitHub Actions 雲端無頭瀏覽器環境進行強固型更新。
     """
     CMONEY_EMAIL = os.environ.get("CMONEY_EMAIL")
     CMONEY_PWD = os.environ.get("CMONEY_PASSWORD")
@@ -190,9 +189,7 @@ def order_on_cmoney(action, stock_code, shares, price=0):
     print(f"🤖 [Playwright] 隱形瀏覽器已在雲端初始化，準備發送委託 [{action} {stock_code} {shares}股]...")
     
     with sync_playwright() as p:
-        # 在 GitHub 伺服器上執行時，headless 必須保持為 True
         browser = p.chromium.launch(headless=True) 
-        # 設定標準電腦解析度與常見的 User-Agent 偽裝，防範網站防爬蟲機制
         context = browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -200,39 +197,59 @@ def order_on_cmoney(action, stock_code, shares, price=0):
         page = context.new_page()
         
         try:
-            # 1. 安全登入
-            page.goto("https://www.cmoney.tw/member/login/", timeout=60000)
-            page.locator("input[type='email']").fill(CMONEY_EMAIL)
-            page.locator("input[type='password']").fill(CMONEY_PWD)
-            page.locator("button:has-text('登入')").click()
-            page.wait_for_timeout(5000) 
-            
-            # 2. 直奔股市大富翁主頁面
+            # 1. 改善登入流程：先進入主頁，防範直接進入登入頁造成的載入死鎖
             page.goto("https://www.cmoney.tw/vt/main-page.aspx", timeout=60000)
             page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(3000)
+            page.wait_for_timeout(2000)
+            
+            # 偵測右上角或內嵌的「登入」按鈕，如果存在則點擊
+            login_trigger = page.locator("text='登入', .login-btn, #login, [href*='login']").first
+            if login_trigger.is_visible():
+                login_trigger.click()
+                page.wait_for_timeout(2000)
 
-            # 3. 尋找代號輸入框，填入股票並按 Enter 查詢
+            # 使用強固的模糊多重匹配定位輸入框
+            email_input = page.locator('input[placeholder*="Email"], input[type="email"], input[name*="mail"], #txtEmail').first
+            pwd_input = page.locator('input[placeholder*="密碼"], input[type="password"], input[name*="assword"], #txtPassword').first
+            
+            # 顯式等待輸入框出現在畫面上 (設定 15 秒寬限期)
+            email_input.wait_for(state="visible", timeout=15000)
+            
+            email_input.fill(CMONEY_EMAIL)
+            pwd_input.fill(CMONEY_PWD)
+            page.wait_for_timeout(500)
+            
+            # 點擊送出登入
+            submit_login = page.locator("button:has-text('登入'), input[type='submit'], .submit-btn, #btnLogin").first
+            submit_login.click()
+            
+            # 等待跳轉回到交易主頁面
+            page.wait_for_url("**/vt/main-page.aspx*", timeout=20000)
+            page.wait_for_load_state("networkidle")
+            print("🔐 [CMoney 成功] 雲端模擬真人登入成功！")
+
+            # 2. 尋找代號輸入框，填入股票並按 Enter 查詢
             search_input = page.locator('input[placeholder*="股票代號"], #txtStockCode').first
+            search_input.wait_for(state="visible", timeout=10000)
             search_input.fill(str(stock_code))
             search_input.press("Enter")
             page.wait_for_timeout(4000) 
             
-            # 4. 點選買進/賣出方向
+            # 3. 點選買進/賣出方向
             if action == "BUY":
                 page.locator("button:has-text('買進'), #btnBuy").first.click()
             else:
                 page.locator("button:has-text('賣出'), #btnSell").first.click()
             page.wait_for_timeout(1500)
 
-            # 5. 交易類別判定 (小於 1000 股自動切換至「零股」頁籤)
+            # 4. 交易類別判定 (小於 1000 股自動切換至「零股」頁籤)
             if shares < 1000:
                 odd_btn = page.locator("text='零股', #radOdd").first
                 if odd_btn.is_visible():
                     odd_btn.click()
                     page.wait_for_timeout(1000)
             
-            # 6. 填入委託數量與委託價格
+            # 5. 填入委託數量與委託價格
             qty_input = page.locator('input[id*="Qty"], #txtQuantity').first
             qty_input.fill(str(shares))
             
@@ -242,7 +259,7 @@ def order_on_cmoney(action, stock_code, shares, price=0):
                 
             page.wait_for_timeout(1500)
             
-            # 7. 點擊最終的送出按鈕
+            # 6. 點擊最終的送出按鈕
             submit_btn = page.locator("button:has-text('下單'), button:has-text('送出'), #btnSubmitOrder").first
             submit_btn.click()
             page.wait_for_timeout(4000)
@@ -266,7 +283,7 @@ def get_dynamic_prompt(current_mode, current_time_str):
 3. 自主決定交易與否：如果覺得大盤不佳或沒把握，隨時可以選擇「完全不交易觀望」（trades 陣列保持為空 []）。
 4. 資金風控：買高價股（如2330台積電）時，股數請嚴格限制在 10~50 股，絕不能讓總金額超過你的剩餘現金！
 
-你必須先呼叫「get_stock_kline_chart」工具來查看你想關注股票的 30 天 K 線圖，看完後再做出最終決策。
+你必須先呼叫「get_stock_kline_chart nudge」工具來查看你想關注股票的 30 天 K 線圖，看完後再做出最終決策。
 
 ⚠️ 嚴格規格：
 你的最終回應必須「完全符合」以下 JSON 格式，不要附帶 any 額外的 Markdown 說明文字（如 ```json 等）：
@@ -453,14 +470,11 @@ def generate_html_dashboard():
 
 # ==================== 6. 引擎啟動入口 ====================
 if __name__ == "__main__":
-    # 取得目前台北時間（UTC+8）
-    # 注意：如果 GitHub 伺服器時區是 UTC，可以手動修正時區，這裡直接讀取系統時間
     now_hour = datetime.datetime.now().hour
     now_minute = datetime.datetime.now().minute
     time_val = now_hour * 100 + now_minute
     current_time_str = datetime.datetime.now().strftime("%H:%M")
 
-    # 判斷時段
     if 830 <= time_val < 900:
         current_mode = "盤前部署模式"
     elif 900 <= time_val <= 1330:
@@ -471,7 +485,6 @@ if __name__ == "__main__":
     print(f"🤖 正在啟動雙模智慧全自主網頁炒股核心引擎 (CMoney 完全體支援)...")
     tools_manager = StockTools()
     
-    # 喚醒 Gemini 做出決策
     print(f"👉 正在喚醒 Google Gemini 隊進行【{current_mode}】決策...")
     gemini_decision = ask_gemini(tools_manager, current_mode, current_time_str)
     
