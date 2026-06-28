@@ -15,7 +15,6 @@ def is_taiwan_market_open():
     1. 先判斷今天是不是週六或週日。
     2. 再透過 yfinance 抓取加權指數 (^TWII) 的最新交易日，判斷今天是不是國定假日/颱風假。
     """
-    # 取得台北時間的今天日期
     today = datetime.date.today()
     
     # 檢查週六(5)與週日(6)
@@ -25,7 +24,6 @@ def is_taiwan_market_open():
         
     print("🔍 正在連線市場確認今天是否為國定假日或特殊休市日...")
     try:
-        # 抓取台股大盤加權指數最新的 1 天數據
         twii = yf.Ticker("^TWII")
         hist = twii.history(period="1d")
         
@@ -33,10 +31,8 @@ def is_taiwan_market_open():
             print("⚠️ 無法取得大盤數據，預設今日正常開盤。")
             return True
             
-        # 取得大盤最新數據的日期（扣除時區，只留日期）
         last_market_date = hist.index[0].date()
         
-        # 如果大盤最新交易日期不是今天，代表今天市場沒開門（國定假日、補假或颱風假）
         if last_market_date != today:
             print(f"🛑 【休市通知】經查今日為台股市場休市日（最新交易日為 {last_market_date}），系統自動進入休假模式。")
             return False
@@ -44,24 +40,25 @@ def is_taiwan_market_open():
         print("📈 【開盤確認】經查今日台灣股市正常開盤交易！")
         return True
     except Exception as e:
-        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤。")
+        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤. ")
         return True
 
-# ==================== 1. 初始化與工具設定 ====================
+# ==================== 1. 初始化與核心工具設定（K線 + 抓新聞） ====================
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 gemini_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
 class StockTools:
     def __init__(self):
-        self.call_count = 0
+        self.kline_count = 0
+        self.news_count = 0
 
     def get_stock_kline_chart(self, stock_code: str) -> str:
         """
         輸入台灣股票四碼代碼（例如 '2330'），自動下載過去30天的股價，
         生成一張包含5MA、20MA與成交量 K 線圖。AI 每天最多能呼叫 3 次。
         """
-        self.call_count += 1
-        if self.call_count > 3:
+        self.kline_count += 1
+        if self.kline_count > 3:
             return "【系統提示】你今天查看 K 線圖的次數已達上限，請勿再呼叫此工具。"
         
         print(f"⏳ 正在調用 K 線圖生成工具 [代碼: {stock_code}]，進入防護延遲...")
@@ -86,9 +83,42 @@ class StockTools:
                 style='charles', title=f"Stock {code} - Last 30 Days",
                 savefig=image_path
             )
-            return f"【系統通知】成功生成 {code} 的 K 線圖，已輸入你的視覺大腦，請據此進行分析。"
+            return f"【系統通知】成功生成 {code} 的 K 線圖，已輸入你的視覺大腦，請據此進行技術面分析。"
         except Exception as e:
             return f"【系統錯誤】暫時無法取得該 K 圖，原因：{str(e)}"
+
+    def get_stock_news(self, stock_code: str) -> str:
+        """
+        輸入台灣股票四碼代碼（例如 '2330'），自動去市場上抓取該公司最新、最熱門的 3 則財經新聞與公告。
+        AI 每天最多能呼叫 3 次。
+        """
+        self.news_count += 1
+        if self.news_count > 3:
+            return "【系統提示】你今天查看即時新聞的次數已達上限，請勿再呼叫此工具。"
+
+        print(f"📰 正在為 AI 大腦蒐集 {stock_code} 的市場即時新聞公告與市場消息面...")
+        time.sleep(2)
+
+        try:
+            code = str(stock_code).strip().replace(".TW", "").replace(".TWO", "")
+            ticker = yf.Ticker(f"{code}.TW")
+            news_list = ticker.news
+            if not news_list:
+                ticker = yf.Ticker(f"{code}.TWO")
+                news_list = ticker.news
+                
+            if not news_list:
+                return f"【系統提示】目前財經網絡上沒有關於股票代碼 {code} 的最新即時重大新聞。"
+                
+            result = f"=== 股票代碼 {code} 最新市場新聞面與公告 ===\n"
+            for i, news in enumerate(news_list[:3]):  # 精選最新 3 則避開長篇大論
+                title = news.get("title", "無標題")
+                publisher = news.get("publisher", "未知媒體")
+                link = news.get("link", "")
+                result += f"[{i+1}] {title} (來源: {publisher})\n"
+            return result
+        except Exception as e:
+            return f"【系統錯誤】新聞消息抓取失敗: {str(e)}"
 
 # ==================== 2. 本地模擬交易撮合引擎 ====================
 DB_FILE = "portfolio.json"
@@ -118,7 +148,6 @@ def save_db(data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 def log_holiday_reason(reason_text):
-    """當休市時，僅更新網頁上的思路標題，不執行任何交易"""
     db = load_db()
     if not db["gemini_bot"]["trade_history"]:
          db["gemini_bot"]["trade_history"].append({"reason": reason_text})
@@ -223,9 +252,6 @@ def execute_trades(bot_key, ai_decision, current_mode):
 
 # ==================== 3. Playwright CMoney 股市大富翁網頁下單 ====================
 def order_on_cmoney(action, stock_code, shares, price=0):
-    """
-    全自動網頁下單：登入 CMoney 股市大富翁並發送交易委託。
-    """
     CMONEY_EMAIL = os.environ.get("CMONEY_EMAIL")
     CMONEY_PWD = os.environ.get("CMONEY_PASSWORD")
 
@@ -256,7 +282,6 @@ def order_on_cmoney(action, stock_code, shares, price=0):
             pwd_input = page.locator('input[type="password"], input[name*="password"], #Password').first
             
             email_input.wait_for(state="visible", timeout=15000)
-            
             email_input.fill(CMONEY_EMAIL)
             pwd_input.fill(CMONEY_PWD)
             page.wait_for_timeout(500)
@@ -309,23 +334,24 @@ def order_on_cmoney(action, stock_code, shares, price=0):
             
         browser.close()
 
-# ==================== 4. 動態時段提示詞系統 ====================
+# ==================== 4. 動態時段提示詞系統（加強消息面指引） ====================
 def get_dynamic_prompt(current_mode, current_time_str):
     return f"""
 你是擁有完全自主權的台股頂級量化基金操盤手。你現在有 10 萬元初始資金，支援零股交易。
 🔔 【時段狀態感應】：現在是台北時間 {current_time_str}，系統正處於【{current_mode}】。
 
-根據時段，你必須採取不同的交易戰術：
-1. 如果是【盤前部署模式】：你可以預判今天可以低接的理想價格進行「限價預約掛單」（填入 price 欄位）。
-2. 如果是【盤中即時戰鬥模式】：代表市場正在波動。你的決策會「立刻以市價成交」。
-3. 自主決定交易與否：如果覺得大盤不佳或沒把握，隨時可以選擇「完全不交易觀觀望」（trades 陣列保持為空 []）。
+你的當前核心觀察名單為台股焦點股：【2330 (台積電), 2317 (鴻海), 2454 (聯發科)】。
 
-你必須先呼叫「get_stock_kline_chart」工具來查看你想關注股票的 30 天 K 線圖，看完後再做出最終決策。
+🌟【操盤特權指引】：
+1. 你擁有調閱即時新聞的權限。在做決定前，請務必先針對你想了解的股票呼叫「get_stock_news」工具，閱讀今天的最新財經新聞、公告與市場消息！
+2. 閱讀完新聞後，如果想進一步分析技術面，請呼叫「get_stock_kline_chart」工具來查看該個股 30 天 K 線圖。
+3. 如果此時是【盤前部署模式】（開盤前半小時）：請結合你剛看到的新聞利多或利空，推估合理的低接或高拋價格，進行「限價預約掛單」（trades 內需填寫理想的 price 價格）。
+4. 自主權利：若新聞顯示大盤不穩或個股無明顯動能，你完全可以選擇冷靜觀望（trades 陣列保持為空 []）。
 
 ⚠️ 嚴格規格：
-你的最終回應必須「完全符合」以下 JSON 格式：
+你的最終回應必須「完全符合」以下 JSON 格式，不要附帶任何額外的 Markdown 說明：
 {{
-  "reason": "【時段決策: {current_mode}】詳細分析理由。",
+  "reason": "【時段決策: {current_mode}】請詳細說明：你看了哪檔股票的新聞消息？發現了什麼利多/利空？並結合 K 線圖，給出你決定盤前限價掛單或觀望的宏觀與微觀理由。",
   "trades": [
     {{
       "code": "四碼台灣股票代碼", 
@@ -342,10 +368,11 @@ def ask_gemini(tools_object, current_mode, current_time_str):
         if not gemini_client:
             raise Exception("未設定 GEMINI_API_KEY 金鑰")
             
-        print(f"⏳ [時段切換] 偵測到當前為【{current_mode}】，正在喚醒 Gemini 2.5 核心...")
+        print(f"⏳ [時段切換] 偵測到當前為【{current_mode}】，正在喚醒 Gemini 2.5 雙料分析核心...")
         time.sleep(3) 
         
-        shared_tools = [tools_object.get_stock_kline_chart]
+        # 同時配備【K線工具】與【新聞工具】
+        shared_tools = [tools_object.get_stock_kline_chart, tools_object.get_stock_news]
         prompt = get_dynamic_prompt(current_mode, current_time_str)
         
         response = gemini_client.models.generate_content(
@@ -383,7 +410,7 @@ def generate_html_dashboard():
         <div class="max-w-6xl mx-auto">
             <header class="text-center my-6">
                 <h1 class="text-3xl md:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-teal-400 via-blue-500 to-purple-600 mb-2">🤖 全天候動態時段操盤系統 📈</h1>
-                <p class="text-gray-400 text-sm md:text-base">自動區分「盤前限價掛單」與「盤中市價即時戰鬥」，給予 AI 完全的下單與觀望自由權</p>
+                <p class="text-gray-400 text-sm md:text-base">開盤前半小時自動調閱【即時新聞消息】與【技術K線圖】雙料自主選股佈局</p>
                 <div class="inline-block bg-gray-800 text-gray-400 px-4 py-1.5 rounded-full text-xs md:text-sm mt-3 border border-gray-700">
                     🕒 網頁最後更新時間：""" + db["last_updated"] + """
                 </div>
@@ -459,7 +486,7 @@ def generate_html_dashboard():
                     </div>
                     
                     <div class="bg-gray-900/40 p-4 rounded-xl border border-gray-700/30 mb-6">
-                        <h4 class="text-xs font-bold text-yellow-400 uppercase tracking-wider mb-1">🧠 當前時段決策思路</h4>
+                        <h4 class="text-xs font-bold text-yellow-400 uppercase tracking-wider mb-1">🧠 當前消息面與操盤思路</h4>
                         <p class="text-xs text-gray-300 leading-relaxed italic">「{last_reason}」</p>
                     </div>
 
@@ -493,24 +520,23 @@ def generate_html_dashboard():
     
     with open("index.html", "w", encoding="utf-8") as f:
         f.write(html_content)
-    print("✨ [網頁更新成功] 精美 index.html 直播面板已完成覆蓋！")
+    print("✨ [網頁更新成功] 精美 index.html 直表面板已完成覆蓋！")
 
 # ==================== 6. 引擎啟動入口 ====================
 if __name__ == "__main__":
     print(f"🤖 正在啟動雙模智慧全自主網頁炒股核心引擎 (CMoney 完全體支援)...")
     
-    # 🔥 第一關：先進行市場開盤日檢查
     if not is_taiwan_market_open():
-        print("🏖️ 偵測到今日台股未開盤！系統將跳過 AI 決策與 CMoney 登入，直接進入休假模式。")
+        print("🏖️ 偵測到今日台股未開盤！直接進入休假模式。")
         log_holiday_reason("【今日休市】今天是週末或國定例假日，台股未開盤。AI 機器人正在休息覆盤中。")
         generate_html_dashboard()
     else:
-        # 如果有開盤，才執行原本的操盤排程
         now_hour = datetime.datetime.now().hour
         now_minute = datetime.datetime.now().minute
         time_val = now_hour * 100 + now_minute
         current_time_str = datetime.datetime.now().strftime("%H:%M")
 
+        # 🕒 區分開盤前（08:30~09:00）、盤中與盤後
         if 830 <= time_val < 900:
             current_mode = "盤前部署模式"
         elif 900 <= time_val <= 1330:
