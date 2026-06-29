@@ -15,7 +15,10 @@ def is_taiwan_market_open():
     1. 先判斷今天是不是週六或週日。
     2. 再透過 yfinance 抓取加權指數 (^TWII) 的最新交易日，判斷今天是不是國定假日/颱風假。
     """
-    today = datetime.date.today()
+    # 強制使用台北時間（UTC+8）來判斷今天的日期
+    utc_now = datetime.datetime.utcnow()
+    tw_now = utc_now + datetime.timedelta(hours=8)
+    today = tw_now.date()
     
     # 檢查週六(5)與週日(6)
     if today.weekday() in [5, 6]:
@@ -40,7 +43,7 @@ def is_taiwan_market_open():
         print("📈 【開盤確認】經查今日台灣股市正常開盤交易！")
         return True
     except Exception as e:
-        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤. ")
+        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤。")
         return True
 
 # ==================== 1. 初始化與核心工具設定（K線 + 抓新聞） ====================
@@ -111,10 +114,9 @@ class StockTools:
                 return f"【系統提示】目前財經網絡上沒有關於股票代碼 {code} 的最新即時重大新聞。"
                 
             result = f"=== 股票代碼 {code} 最新市場新聞面與公告 ===\n"
-            for i, news in enumerate(news_list[:3]):  # 精選最新 3 則避開長篇大論
+            for i, news in enumerate(news_list[:3]):
                 title = news.get("title", "無標題")
                 publisher = news.get("publisher", "未知媒體")
-                link = news.get("link", "")
                 result += f"[{i+1}] {title} (來源: {publisher})\n"
             return result
         except Exception as e:
@@ -124,11 +126,15 @@ class StockTools:
 DB_FILE = "portfolio.json"
 
 def load_db():
+    utc_now = datetime.datetime.utcnow()
+    tw_now = utc_now + datetime.timedelta(hours=8)
+    today_str = str(tw_now.date())
+
     if not os.path.exists(DB_FILE):
         init_data = {
-            "openai_bot": {"cash": 100000.0, "holdings": {}, "trade_history": [{"date": str(datetime.date.today()), "action": "HOLD", "code": "NONE", "shares": 0, "price": 0, "fee": 0, "reason": "OpenAI 隊目前處於非賽季維護狀態。"}]},
+            "openai_bot": {"cash": 100000.0, "holdings": {}, "trade_history": [{"date": today_str, "action": "HOLD", "code": "NONE", "shares": 0, "price": 0, "fee": 0, "reason": "OpenAI 隊目前處於非賽季維護狀態。"}]},
             "gemini_bot": {"cash": 100000.0, "holdings": {}, "trade_history": []},
-            "last_updated": str(datetime.date.today())
+            "last_updated": today_str
         }
         with open(DB_FILE, "w", encoding="utf-8") as f:
             json.dump(init_data, f, indent=2)
@@ -137,13 +143,15 @@ def load_db():
             return json.load(f)
         except:
             return {
-                "openai_bot": {"cash": 100000.0, "holdings": {}, "trade_history": [{"date": str(datetime.date.today()), "action": "HOLD", "code": "NONE", "shares": 0, "price": 0, "fee": 0, "reason": "OpenAI 隊目前處於非賽季維護狀態。"}]},
+                "openai_bot": {"cash": 100000.0, "holdings": {}, "trade_history": [{"date": today_str, "action": "HOLD", "code": "NONE", "shares": 0, "price": 0, "fee": 0, "reason": "OpenAI 隊目前處於非賽季維護狀態。"}]},
                 "gemini_bot": {"cash": 100000.0, "holdings": {}, "trade_history": []},
-                "last_updated": str(datetime.date.today())
+                "last_updated": today_str
             }
 
 def save_db(data):
-    data["last_updated"] = f"{datetime.date.today()} {datetime.datetime.now().strftime('%H:%M')}"
+    utc_now = datetime.datetime.utcnow()
+    tw_now = utc_now + datetime.timedelta(hours=8)
+    data["last_updated"] = f"{tw_now.date()} {tw_now.strftime('%H:%M')}"
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
@@ -160,6 +168,10 @@ def execute_trades(bot_key, ai_decision, current_mode):
     bot = db[bot_key]
     trades = ai_decision.get("trades", [])
     
+    utc_now = datetime.datetime.utcnow()
+    tw_now = utc_now + datetime.timedelta(hours=8)
+    today_str = str(tw_now.date())
+
     for t in trades:
         code = str(t.get("code")).strip().replace(".TW", "").replace(".TWO", "")
         action = t.get("action")
@@ -215,7 +227,7 @@ def execute_trades(bot_key, ai_decision, current_mode):
                     h["avg_cost"] = ((h["avg_cost"] * h["shares"]) + total_cost) / new_shares
                     h["shares"] = new_shares
                     bot["trade_history"].append({
-                        "date": str(datetime.date.today()), "action": "BUY", "code": code, 
+                        "date": today_str, "action": "BUY", "code": code, 
                         "shares": shares, "price": trade_price, "fee": fee, "reason": ai_decision.get("reason", "")
                     })
                     print(f"✅ {log_prefix} 成功買進 {code} 共 {shares} 股，成交價 ${trade_price}")
@@ -224,7 +236,7 @@ def execute_trades(bot_key, ai_decision, current_mode):
             else:
                 print(f"⏳ 【本地掛單未成交】AI 想以 ${trade_price} 低接 {code}，今日市場未達此價位。")
                 bot["trade_history"].append({
-                    "date": str(datetime.date.today()), "action": "HOLD", "code": code,
+                    "date": today_str, "action": "HOLD", "code": code,
                     "shares": 0, "price": 0, "fee": 0, "reason": f"【預約限價未觸發】原計畫以 ${trade_price} 買入 {code}，今日最低價為 ${today_low}。" + ai_decision.get("reason", "")
                 })
                 
@@ -236,7 +248,7 @@ def execute_trades(bot_key, ai_decision, current_mode):
                     bot["cash"] += total_revenue
                     bot["holdings"][code]["shares"] -= shares
                     bot["trade_history"].append({
-                        "date": str(datetime.date.today()), "action": "SELL", "code": code, 
+                        "date": today_str, "action": "SELL", "code": code, 
                         "shares": shares, "price": trade_price, "fee": fee + tax, "reason": ai_decision.get("reason", "")
                     })
                     print(f"✅ {log_prefix} 成功賣出 {code} 共 {shares} 股！")
@@ -275,9 +287,6 @@ def order_on_cmoney(action, stock_code, shares, price=0):
             page.wait_for_load_state("networkidle")
             page.wait_for_timeout(3000)
             
-            current_url = page.url
-            print(f"📍 目前瀏覽器所在網址: {current_url}")
-            
             email_input = page.locator('input[type="email"], input[name*="username"], input[name*="mail"], #Username').first
             pwd_input = page.locator('input[type="password"], input[name*="password"], #Password').first
             
@@ -289,7 +298,6 @@ def order_on_cmoney(action, stock_code, shares, price=0):
             submit_login = page.locator("button[type='submit'], button:has-text('登入'), .btn-primary").first
             submit_login.click()
             
-            print("🚀 登入憑證已送出，正在強制導航回大富翁主交易頁...")
             page.wait_for_timeout(5000)
             page.goto("https://www.cmoney.tw/vt/main-page.aspx", timeout=60000)
             page.wait_for_load_state("networkidle")
@@ -334,7 +342,7 @@ def order_on_cmoney(action, stock_code, shares, price=0):
             
         browser.close()
 
-# ==================== 4. 動態時段提示詞系統（加強消息面指引） ====================
+# ==================== 4. 動態時段提示詞系統（消息面指引） ====================
 def get_dynamic_prompt(current_mode, current_time_str):
     return f"""
 你是擁有完全自主權的台股頂級量化基金操盤手。你現在有 10 萬元初始資金，支援零股交易。
@@ -351,7 +359,7 @@ def get_dynamic_prompt(current_mode, current_time_str):
 ⚠️ 嚴格規格：
 你的最終回應必須「完全符合」以下 JSON 格式，不要附帶任何額外的 Markdown 說明：
 {{
-  "reason": "【時段決策: {current_mode}】請詳細說明：你看了哪檔股票的新聞消息？發現了什麼利多/利空？並結合 K 線圖，給出你決定盤前限價掛單或觀望的宏觀與微觀理由。",
+  "reason": "【時段決策: {current_mode}】請詳細說明：你看了哪檔股票的新聞消息？發現了什麼利多/利空？並結合 K 線圖，給出你決定限價掛單、市價交易或觀望的宏觀與微觀理由。",
   "trades": [
     {{
       "code": "四碼台灣股票代碼", 
@@ -371,7 +379,6 @@ def ask_gemini(tools_object, current_mode, current_time_str):
         print(f"⏳ [時段切換] 偵測到當前為【{current_mode}】，正在喚醒 Gemini 2.5 雙料分析核心...")
         time.sleep(3) 
         
-        # 同時配備【K線工具】與【新聞工具】
         shared_tools = [tools_object.get_stock_kline_chart, tools_object.get_stock_news]
         prompt = get_dynamic_prompt(current_mode, current_time_str)
         
@@ -526,17 +533,23 @@ def generate_html_dashboard():
 if __name__ == "__main__":
     print(f"🤖 正在啟動雙模智慧全自主網頁炒股核心引擎 (CMoney 完全體支援)...")
     
+    # 🔥 第一步防禦：優先進行市場開盤日檢查
     if not is_taiwan_market_open():
         print("🏖️ 偵測到今日台股未開盤！直接進入休假模式。")
         log_holiday_reason("【今日休市】今天是週末或國定例假日，台股未開盤。AI 機器人正在休息覆盤中。")
         generate_html_dashboard()
     else:
-        now_hour = datetime.datetime.now().hour
-        now_minute = datetime.datetime.now().minute
+        # ─── 🕒 強制將伺服器時間校正為台北時區 (GMT+8) ───
+        utc_now = datetime.datetime.utcnow()
+        tw_now = utc_now + datetime.timedelta(hours=8)
+        
+        now_hour = tw_now.hour
+        now_minute = tw_now.minute
         time_val = now_hour * 100 + now_minute
-        current_time_str = datetime.datetime.now().strftime("%H:%M")
+        current_time_str = tw_now.strftime("%H:%M")
+        # ───────────────────────────────────────────────
 
-        # 🕒 區分開盤前（08:30~09:00）、盤中與盤後
+        # 🕒 依據精準的台灣時間區分盤前、盤中與盤後
         if 830 <= time_val < 900:
             current_mode = "盤前部署模式"
         elif 900 <= time_val <= 1330:
@@ -545,7 +558,7 @@ if __name__ == "__main__":
             current_mode = "盤後覆盤模式"
 
         tools_manager = StockTools()
-        print(f"👉 正在喚醒 Google Gemini 隊進行【{current_mode}】決策...")
+        print(f"👉 正在喚醒 Google Gemini 隊進行【{current_mode}】決策... (精準台灣時間: {current_time_str})")
         gemini_decision = ask_gemini(tools_manager, current_mode, current_time_str)
         
         execute_trades("gemini_bot", gemini_decision, current_mode)
