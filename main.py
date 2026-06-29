@@ -43,7 +43,7 @@ def is_taiwan_market_open():
         print("📈 【開盤確認】經查今日台灣股市正常開盤交易！")
         return True
     except Exception as e:
-        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤。")
+        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤. ")
         return True
 
 # ==================== 1. 初始化與核心工具設定（K線 + 抓新聞） ====================
@@ -352,7 +352,7 @@ def get_dynamic_prompt(current_mode, current_time_str):
 
 🌟【操盤特權指引】：
 1. 你擁有調閱即時新聞的權限。在做決定前，請務必先針對你想了解的股票呼叫「get_stock_news」工具，閱讀今天的最新財經新聞、公告與市場消息！
-2. 閱讀完新聞後，如果想進一步分析技術面，請呼叫「get_stock_kline_chart」工具來查看該個股 30 天 K 線圖。
+2. 閱讀完新聞後，如果想進一步分析技術面，請呼叫「get_stock_kline_chart grandfather」工具來查看該個股 30 天 K 線圖。
 3. 如果此時是【盤前部署模式】（開盤前半小時）：請結合你剛看到的新聞利多或利空，推估合理的低接或高拋價格，進行「限價預約掛單」（trades 內需填寫理想的 price 價格）。
 4. 自主權利：若新聞顯示大盤不穩或個股無明顯動能，你完全可以選擇冷靜觀望（trades 陣列保持為空 []）。
 
@@ -563,6 +563,16 @@ if __name__ == "__main__":
         
         execute_trades("gemini_bot", gemini_decision, current_mode)
         
+        # ─── 📢 讓 AI 大腦在命令列公開宣佈今日決策 ───
+        print("\n📢 【Gemini 操盤手本日決策公開】")
+        print(f"💬 核心思路：{gemini_decision.get('reason', '無詳細說明')}")
+        if not gemini_decision.get("trades"):
+            print("💤 決策結果：今日盤勢不穩或無明確標的，決定【空倉冷靜觀望】，不進行任何買賣委託。")
+        for t in gemini_decision.get("trades", []):
+            print(f"🎯 委託計畫：預計執行【{t.get('action')}】股票代碼 {t.get('code')}，數量 {t.get('shares')} 股，目標價格 ${t.get('price', '市價')}")
+        print("───────────────────────────────────\n")
+        # ──────────────────────────────────────────────
+
         for t in gemini_decision.get("trades", []):
             order_on_cmoney(
                 action=t.get("action"),
