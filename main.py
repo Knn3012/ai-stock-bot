@@ -40,7 +40,7 @@ def is_taiwan_market_open():
         print("📈 【開盤確認】經查今日台灣股市正常開盤交易！")
         return True
     except Exception as e:
-        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤。")
+        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤. ")
         return True
 
 # ==================== 1. 自動掃描市場台股量大熱門股 ====================
@@ -132,7 +132,7 @@ class StockTools:
             df['K'] = k_list
             df['D'] = d_list
             
-            # 3. RSI 指承 (14)
+            # 3. RSI 指標 (14)
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -145,7 +145,9 @@ class StockTools:
             
             ma_status = "多頭排列 (股價 > 5MA > 20MA)" if latest['Close'] > latest['5MA'] > latest['20MA'] else "空頭排列或震盪整理"
             kd_status = "📈 KD 黃金交叉（具備強力多頭上攻動能）" if (prev['K'] < prev['D'] and latest['K'] > latest['D']) else ("📉 KD 死亡交叉（有短期修正壓力）" if (prev['K'] > prev['D'] and latest['K'] < latest['D']) else "KD 處於既有趨勢中")
-            rsi_status = "⚠️ RSI > 75 進入極度超買過熱區" if latest['RSI'] > 75 else ("🟢 RSI < 25 進入超賣低迷低接區" else "RSI 指標中性溫和")
+            
+            # 🔥 修正後 100% 正確的三元運算子
+            rsi_status = "⚠️ RSI > 75 進入極度超買過熱區" if latest['RSI'] > 75 else ("🟢 RSI < 25 進入超賣低迷低接區" if latest['RSI'] < 25 else "RSI 指標中性溫和")
             
             quant_report = f"""
 === 📊 股票代碼 {code} 頂級量化技術指標精確報告 ===
@@ -328,7 +330,7 @@ def execute_trades(bot_key, ai_decision, current_mode):
                 if is_triggered:
                     tax = int(amount * 0.003) 
                     total_revenue = amount - fee - tax
-                    bot["cash"] -= total_revenue
+                    bot["cash"] += total_revenue
                     bot["holdings"][code]["shares"] -= shares
                     bot["trade_history"].append({
                         "date": today_str, "action": "SELL", "code": code, 
