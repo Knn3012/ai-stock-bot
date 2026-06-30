@@ -43,7 +43,7 @@ def is_taiwan_market_open():
         print("📈 【開盤確認】經查今日台灣股市正常開盤交易！")
         return True
     except Exception as e:
-        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤. ")
+        print(f"⚠️ 檢查休市日發生異常 ({e})，為防漏單，預設今日正常開盤。")
         return True
 
 # ==================== 1. 初始化與核心工具設定（K線 + 抓新聞） ====================
@@ -110,14 +110,34 @@ class StockTools:
                 ticker = yf.Ticker(f"{code}.TWO")
                 news_list = ticker.news
                 
-            if not news_list:
+            if not news_list or not isinstance(news_list, list):
                 return f"【系統提示】目前財經網絡上沒有關於股票代碼 {code} 的最新即時重大新聞。"
                 
             result = f"=== 股票代碼 {code} 最新市場新聞面與公告 ===\n"
-            for i, news in enumerate(news_list[:3]):
-                title = news.get("title", "無標題")
-                publisher = news.get("publisher", "未知媒體")
-                result += f"[{i+1}] {title} (來源: {publisher})\n"
+            
+            # 🔥 新版 yfinance 新聞相容深度解析
+            valid_news_count = 0
+            for news in news_list:
+                # 傳統格式 vs 新版格式相容
+                title = news.get("title") or news.get("content", {}).get("title")
+                publisher = news.get("publisher") or news.get("content", {}).get("provider", {}).get("displayName")
+                
+                # 如果還是抓不到，抓 summary 當備用
+                if not title:
+                    title = news.get("summary") or news.get("content", {}).get("summary", "（請查看技術面或市場公告）")
+                if not publisher:
+                    publisher = "財經新聞網"
+                    
+                title_clean = str(title).strip()[:80]
+                result += f"[{valid_news_count+1}] {title_clean} (來源: {publisher})\n"
+                
+                valid_news_count += 1
+                if valid_news_count >= 3: # 只取前 3 則
+                    break
+                    
+            if valid_news_count == 0:
+                return f"【系統提示】目前 {code} 的新聞格式解析異常，請 AI 改為參考大盤走勢與 K 線圖進行技術面盲測操盤。"
+                
             return result
         except Exception as e:
             return f"【系統錯誤】新聞消息抓取失敗: {str(e)}"
@@ -352,7 +372,7 @@ def get_dynamic_prompt(current_mode, current_time_str):
 
 🌟【操盤特權指引】：
 1. 你擁有調閱即時新聞的權限。在做決定前，請務必先針對你想了解的股票呼叫「get_stock_news」工具，閱讀今天的最新財經新聞、公告與市場消息！
-2. 閱讀完新聞後，如果想進一步分析技術面，請呼叫「get_stock_kline_chart grandfather」工具來查看該個股 30 天 K 線圖。
+2. 閱讀完新聞後，如果想進一步分析技術面，請呼叫「get_stock_kline_chart」工具來查看該個股 30 天 K 線圖。
 3. 如果此時是【盤前部署模式】（開盤前半小時）：請結合你剛看到的新聞利多或利空，推估合理的低接或高拋價格，進行「限價預約掛單」（trades 內需填寫理想的 price 價格）。
 4. 自主權利：若新聞顯示大盤不穩或個股無明顯動能，你完全可以選擇冷靜觀望（trades 陣列保持為空 []）。
 
@@ -567,7 +587,7 @@ if __name__ == "__main__":
         print("\n📢 【Gemini 操盤手本日決策公開】")
         print(f"💬 核心思路：{gemini_decision.get('reason', '無詳細說明')}")
         if not gemini_decision.get("trades"):
-            print("💤 決策結果：今日盤勢不穩或無明確標的，決定【空倉冷靜觀望】，不進行任何買賣委託。")
+            print("💤 決策結果：今日盤勢不穩或無明確標的，決定【空倉冷靜觀望】，不進行 any 買賣委託。")
         for t in gemini_decision.get("trades", []):
             print(f"🎯 委託計畫：預計執行【{t.get('action')}】股票代碼 {t.get('code')}，數量 {t.get('shares')} 股，目標價格 ${t.get('price', '市價')}")
         print("───────────────────────────────────\n")
